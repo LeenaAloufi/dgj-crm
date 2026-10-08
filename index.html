@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-EK1YjkZdT9dfJJB2B3AC+/uIOaPFauA46WzFPXwvnms=' 'sha256-m1xfJTVk3vtuKDm+twLnjF2BWK80Rf99yYJZxFFihio=' 'sha256-gHDYR1HxEI6VyjZD9D/a5E8KM6Rp4EFF4RqXX8S1yqU=' 'sha256-79AUgvtfYbL4N665Oy58ao/YZzcDTkl+fD2qVK/FO2g=' 'sha256-g9weFTZATnPxiZeLyeJPoYWorp+XrDU2Sq6gxrACHwU=' 'sha256-8RzmMPfW1cjQMD7VP9cjU5BVBclFjiHVEKhHYSivyqg='; style-src 'unsafe-inline'; img-src data:; connect-src https://dgj-crm-backend-production.up.railway.app; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-EK1YjkZdT9dfJJB2B3AC+/uIOaPFauA46WzFPXwvnms=' 'sha256-m1xfJTVk3vtuKDm+twLnjF2BWK80Rf99yYJZxFFihio=' 'sha256-gHDYR1HxEI6VyjZD9D/a5E8KM6Rp4EFF4RqXX8S1yqU=' 'sha256-79AUgvtfYbL4N665Oy58ao/YZzcDTkl+fD2qVK/FO2g=' 'sha256-g9weFTZATnPxiZeLyeJPoYWorp+XrDU2Sq6gxrACHwU=' 'sha256-8RzmMPfW1cjQMD7VP9cjU5BVBclFjiHVEKhHYSivyqg=' 'sha256-xMHP7kVlbFR5C38QfcdUdcY4+MWWwwVtQU6EKt4793Q='; style-src 'unsafe-inline'; img-src data:; connect-src https://dgj-crm-backend-production.up.railway.app; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="DGJ CRM: contacts, opportunities, meetings, reports and connected follow-ups.">
   <title>DGJ | CRM</title>
@@ -6297,6 +6297,177 @@ const DGJConnection = (() => {
   }, 45000);
   clearSession();
   return { request, refresh, clearSession, signOut };
+})();
+
+</script>
+  <script>
+/* Teams meeting drafts and Outlook coordination, opened by the signed-in user. */
+const DGJMicrosoft = (() => {
+  const originals = { meetingDetail, rowMenu, successDialog, bookingForm, coordinationNote, help };
+  const modal = () => document.getElementById("modal");
+  const encodeQuery = values => new URLSearchParams(values).toString().replace(/\+/g, "%20");
+  const emailOK = value => value.length > 0 && value.length <= 254 && !/[\r\n<>]/.test(value) && validEmail(value);
+  const emails = value => [...new Set(parseRecipients(String(value || "")).map(x => x.toLowerCase()))];
+  function openLink(href, newTab = false) {
+    const a = document.createElement("a");
+    a.href = href;
+    if (newTab) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
+    document.body.append(a);
+    a.click();
+    a.remove();
+  }
+  function canSchedule(meeting) {
+    return meeting && meeting.status === "Scheduled" && !meeting.url;
+  }
+  function addTeamsAction(container, meeting) {
+    if (!container || !canSchedule(meeting) || container.querySelector("[data-prepare-teams]")) return;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "secondary";
+    b.dataset.prepareTeams = meeting.id;
+    b.textContent = "Schedule in Teams";
+    container.append(b);
+  }
+  function invitationTimes(meeting) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(meeting.date || "") ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(meeting.time || "") ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(meeting.end || "") || meeting.end <= meeting.time) return null;
+    const start = `${meeting.date}T${meeting.time}:00+03:00`;
+    const end = `${meeting.date}T${meeting.end}:00+03:00`;
+    const stamp = new Date(start);
+    if (!Number.isFinite(stamp.getTime()) || new Date(stamp.getTime() + 3 * 3600000).toISOString().slice(0, 10) !== meeting.date) return null;
+    return { start, end };
+  }
+  function scheduleMeeting(id) {
+    if (!window.DGJSession.ready) return;
+    const m = visibleRecord("Meetings", id);
+    if (!m) return toast("Meeting is not available.");
+    if (!canSchedule(m)) return toast(m.url ? "A meeting link is already saved. Use Join Meeting, or edit the saved link." : "Only a planned meeting can be scheduled in Teams.");
+    const times = invitationTimes(m);
+    if (!times) return toast("Edit the meeting and add a valid date, start time and later end time first.");
+    const contacts = (m.contactIds || []).map(id => visibleRecord("Contacts", id)).filter(Boolean);
+    const missing = contacts.filter(c => !emailOK(String(c.email || "")));
+    const contactEmails = contacts.map(c => String(c.email || "").trim()).filter(emailOK);
+    const external = String(m.externalAttendees || "").split(/[,;\n]+/).map(s => s.trim().match(/<([^<>]+)>$/)?.[1] || s.trim()).filter(emailOK);
+    const to = emails([...contactEmails, ...external].join("; "));
+    const team = USERS.filter(u => u.id !== user.id && emailOK(String(u.email || "")));
+    const d = showDialog(`<form id="teams-invite-form">${dialogTitle("Schedule in Microsoft Teams", m.name)}<p class="notice">Review the invitation here, then confirm and send it in Teams using your Microsoft account.</p><p class="smallnote">${esc(dateLabel(m.date))} · ${esc(timeLabel(m.time))} – ${esc(timeLabel(m.end))} · Riyadh (UTC+03:00). Edit the CRM meeting first if its time needs to change.</p>${fieldHTML("Meeting subject", "subject", m.name, "text", true, 'maxlength="250"')}${fieldHTML("Attendee emails", "to", to.join("; "), "text", true, 'maxlength="4000" placeholder="name@company.com; second@company.com"')}${missing.length ? `<p class="smallnote">No email recorded for: ${missing.map(c => esc(c.name)).join(", ")}. Add their addresses above before sending.</p>` : ""}${team.length ? `<fieldset class="visibility"><legend>Add team members</legend>${team.map(u => `<label><input type="checkbox" data-team-attendee="${esc(u.email)}" ${to.includes(u.email.toLowerCase()) ? "checked" : ""}> ${esc(u.name)} <small>${esc(u.email)}</small></label>`).join("")}</fieldset>` : ""}${textareaHTML("Invitation message", "body", m.agenda || m.notes || "", false, 6)}<p class="smallnote">Teams checks the attendee addresses. Use their Microsoft account address where it differs from their contact email. A CRM account does not create a Microsoft account.</p><div class="formbuttons"><button type="button" class="secondary" data-meeting-detail="${esc(id)}">Back</button><button type="submit" class="primary">Review & Send in Teams</button></div><p class="smallnote">After sending in Teams, paste its join link into Edit Meeting → Teams / Meeting Link. Changes in Teams and CRM are saved separately.</p></form>`);
+    d.classList.add("dialog-medium");
+    const epoch = window.DGJSession.epoch;
+    const form = d.querySelector("form");
+    d.querySelectorAll("[data-team-attendee]").forEach(c => {
+      c.onchange = () => {
+        const address = c.dataset.teamAttendee.toLowerCase();
+        const current = emails(form.elements.to.value).filter(x => x !== address);
+        if (c.checked) current.push(address);
+        form.elements.to.value = current.join("; ");
+      };
+    });
+    form.onsubmit = e => {
+      e.preventDefault();
+      if (!window.DGJSession.ready || epoch !== window.DGJSession.epoch) return;
+      const current = visibleRecord("Meetings", id);
+      if (!current || current.version !== m.version || !canSchedule(current)) return toast("Meeting changed. Close this draft and open the latest meeting details.");
+      const recipients = emails(form.elements.to.value);
+      const subject = form.elements.subject.value.trim();
+      if (!recipients.length || recipients.some(x => !emailOK(x))) return toast("Enter valid attendee emails separated by commas or semicolons.");
+      if (!subject || subject.length > 250 || /[\r\n]/.test(subject)) return toast("Add a meeting subject on one line, up to 250 characters.");
+      const href = "https://teams.microsoft.com/l/meeting/new?" + encodeQuery({
+        subject, startTime: times.start, endTime: times.end,
+        content: form.elements.body.value, attendees: recipients.join(",")
+      });
+      if (href.length > 7000) return toast("Invitation is too long to open through a Teams link. Shorten its message or attendee list.");
+      openLink(href, true);
+      toast("Requested opening Teams. Review and send the invitation there.");
+    };
+  }
+  meetingDetail = function (id) {
+    originals.meetingDetail(id);
+    addTeamsAction(modal().querySelector(".detail-actions"), visibleRecord("Meetings", id));
+  };
+  rowMenu = function (kind, id) {
+    originals.rowMenu(kind, id);
+    if (kind === "Meetings") addTeamsAction(modal().querySelector(".row-action-list"), visibleRecord(kind, id));
+  };
+  successDialog = function (title, record, kind, checks = []) {
+    originals.successDialog(title, record, kind, checks);
+    if (kind === "Meetings") {
+      addTeamsAction(modal().querySelector(".formbuttons"), visibleRecord(kind, record.id));
+      if (canSchedule(record)) {
+        modal().querySelector("h2").textContent = "Meeting Saved";
+        const note = document.createElement("p");
+        note.className = "smallnote";
+        note.textContent = "Saved in CRM. Use Schedule in Teams to review and send the calendar invitation.";
+        modal().querySelector(".formbuttons").before(note);
+      }
+    }
+  };
+  bookingForm = function (id, suggested = {}) {
+    originals.bookingForm(id, suggested);
+    const form = modal().querySelector("#booking-form");
+    if (!form) return;
+    if (!id) form.querySelector('[type="submit"]').textContent = "Save Meeting";
+    const note = document.createElement("p");
+    note.className = "smallnote";
+    note.textContent = "Save the meeting first, then use Schedule in Teams to send its invitation. Enter additional attendees as email addresses separated by semicolons.";
+    form.querySelector(".formbuttons").before(note);
+  };
+  coordinationNote = function (id) {
+    if (!window.DGJSession.ready || !opportunityFlow?.draft) return;
+    const opportunity = visibleRecord("Opportunities", id);
+    if (!opportunity) return toast("Opportunity is not available.");
+    originals.coordinationNote(id);
+    const form = modal().querySelector("#coordination-form");
+    if (!form) return;
+    const owner = USERS.find(u => u.id === opportunity.ownerId);
+    const address = String(owner?.email || "");
+    const label = document.createElement("label");
+    label.className = "formfield";
+    label.append(document.createTextNode("Owner email"));
+    const input = document.createElement("input");
+    input.type = "email"; input.name = "ownerEmail"; input.maxLength = 254;
+    input.value = emailOK(address) ? address : "";
+    input.placeholder = "Enter the opportunity owner's email";
+    label.append(input);
+    form.elements.ownerName.closest("label").after(label);
+    form.elements.subject.maxLength = 250;
+    form.elements.subject.value = form.elements.subject.value.slice(0, 250);
+    const originalBody = form.elements.body.value;
+    form.elements.body.value = `${originalBody}\n\nExisting opportunity: ${opportunity.name}${opportunity.reference ? "\nReference: " + opportunity.reference : ""}\nCompany: ${opportunity.company || "Not recorded"}\nStage: ${opportunity.status || "Not recorded"}`;
+    form.querySelector(".notice").textContent = "Review the owner's email and message, then open Outlook and choose Send there. You can also save the coordination note in the existing opportunity.";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "primary"; b.id = "ui-coordinate-outlook";
+    b.textContent = "Open in Outlook";
+    form.querySelector(".formbuttons").append(b);
+    const note = document.createElement("p");
+    note.className = "smallnote";
+    note.textContent = "Opens your default email application. Set Outlook as your default mail app to use it here. The message is sent only when you choose Send in Outlook.";
+    form.append(note);
+    const epoch = window.DGJSession.epoch;
+    b.onclick = () => {
+      if (!window.DGJSession.ready || window.DGJSession.epoch !== epoch) return;
+      if (!visibleRecord("Opportunities", id)) return toast("Opportunity is no longer available.");
+      const to = input.value.trim();
+      const subject = form.elements.subject.value.trim();
+      const body = form.elements.body.value;
+      if (!emailOK(to)) return toast("Add a valid email address for the opportunity owner.");
+      if (!subject || subject.length > 250 || /[\r\n]/.test(subject) || !body.trim()) return toast("Add a subject on one line and a coordination message first.");
+      const href = "mailto:" + encodeURIComponent(to) + "?" + encodeQuery({ subject, body });
+      if (href.length > 7000) return toast("Message is too long for an Outlook link. Shorten it, or use Copy Note and compose it manually.");
+      openLink(href);
+      toast("Requested opening the Outlook draft. Choose Send in Outlook after reviewing it.");
+    };
+  };
+  help = function () {
+    return originals.help() + `<section class="panel" style="margin-top:20px"><h2>Teams & Duplicate Coordination</h2><p>Save a planned meeting, then select Schedule in Teams from its details, Actions menu or confirmation. Contact emails fill the attendee list, and you can add team members. Review and send the invitation in Teams. Paste the resulting join link into Edit Meeting afterwards. Updates in Teams and CRM are separate.</p><p>When a similar opportunity is found, choose Coordinate with Owner. The owner's active CRM account email is filled automatically. If it is unavailable, enter their address. Open in Outlook prepares a message in your default mail application; you choose Send there. Save Note & Continue saves only a coordination note in CRM.</p></section>`;
+  };
+  document.addEventListener("click", e => {
+    const button = e.target.closest("button[data-prepare-teams]");
+    if (!button) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    scheduleMeeting(button.dataset.prepareTeams);
+  }, true);
+  return { scheduleMeeting };
 })();
 
 </script>
